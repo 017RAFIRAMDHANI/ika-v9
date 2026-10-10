@@ -11,14 +11,18 @@ import {
 } from "node:crypto";
 import { deflateRawSync, inflateRawSync } from "node:zlib";
 import {
+  ARCFACE_DESCRIPTOR_LENGTH,
+  FACE_ARCFACE_MODEL_VERSION,
   FACE_CHALLENGE_STEPS,
-  FACE_MODEL_VERSION,
+  FACE_MODEL_VERSIONS,
   expectedEngineForRole,
+  isSupportedFaceProfile,
   type FaceChallengeMode,
   type FaceDescriptorEngine,
   type FaceDeviceClass,
   type FaceChallengeStep,
   type FaceEvidence,
+  type FaceModelVersion,
   type FaceTemplateRole
 } from "@/lib/face-types";
 
@@ -31,13 +35,20 @@ export const FACE_MATCH_THRESHOLD = Number.isFinite(configuredMatchThreshold)
   && configuredMatchThreshold <= 0.9
   ? configuredMatchThreshold
   : 0.68;
+// Ambang cosine ArcFace hasil kalibrasi lintas perangkat (lihat VERIFIKASI-WAJAH.md).
+const configuredArcFaceThreshold = Number(process.env.FACE_ARCFACE_MATCH_THRESHOLD);
+export const FACE_ARCFACE_MATCH_THRESHOLD = Number.isFinite(configuredArcFaceThreshold)
+  && configuredArcFaceThreshold >= 0.4
+  && configuredArcFaceThreshold <= 0.9
+  ? configuredArcFaceThreshold
+  : 0.42;
 
 type ChallengePayload = {
   mode: FaceChallengeMode;
   userId: number | null;
   templateRole: FaceTemplateRole;
   descriptorEngine: FaceDescriptorEngine;
-  modelVersion: typeof FACE_MODEL_VERSION;
+  modelVersion: FaceModelVersion;
   sourceDeviceClass: FaceDeviceClass;
   steps: FaceChallengeStep[];
   issuedAt: number;
@@ -75,6 +86,7 @@ export function createFaceChallenge(input: {
   userId: number | null;
   templateRole: FaceTemplateRole;
   descriptorEngine: FaceDescriptorEngine;
+  modelVersion: FaceModelVersion;
   sourceDeviceClass: FaceDeviceClass;
 }) {
   if (expectedEngineForRole(input.templateRole) !== input.descriptorEngine) {
@@ -83,7 +95,6 @@ export function createFaceChallenge(input: {
   const issuedAt = Date.now();
   const payload: ChallengePayload = {
     ...input,
-    modelVersion: FACE_MODEL_VERSION,
     steps: shuffledChallengeSteps(),
     issuedAt,
     expiresAt: issuedAt + CHALLENGE_AGE_MS,
@@ -110,7 +121,8 @@ function decodeChallenge(token: string): ChallengePayload | null {
       && payload.steps.length === FACE_CHALLENGE_STEPS.length
       && payload.steps.every((step) => FACE_CHALLENGE_STEPS.includes(step));
     const validProfile = expectedEngineForRole(payload.templateRole) === payload.descriptorEngine
-      && payload.modelVersion === FACE_MODEL_VERSION
+      && FACE_MODEL_VERSIONS.includes(payload.modelVersion)
+      && isSupportedFaceProfile(payload.templateRole, payload.modelVersion)
       && ["desktop", "mobile"].includes(payload.sourceDeviceClass);
     if (!validSteps || !validProfile || typeof payload.expiresAt !== "number" || typeof payload.issuedAt !== "number") return null;
     return payload;
@@ -126,7 +138,7 @@ export function validateFaceEvidence(input: {
   userId: number | null;
   templateRole: FaceTemplateRole;
   descriptorEngine: FaceDescriptorEngine;
-  modelVersion: typeof FACE_MODEL_VERSION;
+  modelVersion: FaceModelVersion;
   sourceDeviceClass: FaceDeviceClass;
 }) {
   const challenge = decodeChallenge(input.token);
@@ -166,10 +178,17 @@ export function validateFaceEvidence(input: {
   return { valid: true, challenge } as const;
 }
 
-export function normalizeFaceDescriptor(value: unknown) {
+export function normalizeFaceDescriptor(value: unknown, modelVersion?: FaceModelVersion) {
   if (!Array.isArray(value) || value.length !== FACE_DESCRIPTOR_LENGTH) return null;
   const descriptor = value.map(Number);
   if (descriptor.some((item) => !Number.isFinite(item) || Math.abs(item) > 10)) return null;
+  if (modelVersion === FACE_ARCFACE_MODEL_VERSION) {
+    // Embedding ArcFace dinormalisasi L2 dan disimpan di slot 1024 (sisa nol),
+    // sehingga kolom descriptor_length=1024 tetap valid tanpa migrasi database.
+    const tail = descriptor.slice(ARCFACE_DESCRIPTOR_LENGTH);
+    const norm = Math.hypot(...descriptor.slice(0, ARCFACE_DESCRIPTOR_LENGTH));
+    if (tail.some((item) => item !== 0) || norm < 0.98 || norm > 1.02) return null;
+  }
   return descriptor.map((item) => Math.round(item * 1_000_000) / 1_000_000);
 }
 
@@ -220,8 +239,24 @@ export function decryptFaceDescriptor(value: string) {
   }
 }
 
-export function faceSimilarity(first: number[], second: number[]) {
+export function faceMatchThreshold(modelVersion: FaceModelVersion) {
+  return modelVersion === FACE_ARCFACE_MODEL_VERSION ? FACE_ARCFACE_MATCH_THRESHOLD : FACE_MATCH_THRESHOLD;
+}
+
+export function faceSimilarity(first: number[], second: number[], modelVersion: FaceModelVersion) {
   if (first.length !== second.length || first.length !== FACE_DESCRIPTOR_LENGTH) return 0;
+  if (modelVersion === FACE_ARCFACE_MODEL_VERSION) {
+    let dot = 0;
+    let firstNorm = 0;
+    let secondNorm = 0;
+    for (let index = 0; index < ARCFACE_DESCRIPTOR_LENGTH; index += 1) {
+      dot += first[index] * second[index];
+      firstNorm += first[index] * first[index];
+      secondNorm += second[index] * second[index];
+    }
+    if (!firstNorm || !secondNorm) return 0;
+    return Math.round(1000 * dot / Math.sqrt(firstNorm * secondNorm)) / 1000;
+  }
   let sum = 0;
   for (let index = 0; index < first.length; index += 1) {
     const difference = first[index] - second[index];

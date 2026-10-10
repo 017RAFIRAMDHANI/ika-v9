@@ -2,7 +2,7 @@ import { z } from "zod";
 import { getFaceVerificationRecord, markFaceVerified } from "@/lib/db";
 import {
   decryptFaceDescriptor,
-  FACE_MATCH_THRESHOLD,
+  faceMatchThreshold,
   faceSimilarity,
   normalizeFaceDescriptor,
   validateFaceEvidence
@@ -11,9 +11,10 @@ import {
   FACE_CHALLENGE_STEPS,
   FACE_DESCRIPTOR_ENGINES,
   FACE_DEVICE_CLASSES,
-  FACE_MODEL_VERSION,
+  FACE_MODEL_VERSIONS,
   FACE_TEMPLATE_ROLES,
-  expectedEngineForRole
+  expectedEngineForRole,
+  isSupportedFaceProfile
 } from "@/lib/face-types";
 import { getSessionUser, markSessionFaceVerified } from "@/lib/session";
 import { isSameOrigin, jsonError } from "@/lib/security";
@@ -21,7 +22,7 @@ import { isSameOrigin, jsonError } from "@/lib/security";
 const schema = z.object({
   templateRole: z.enum(FACE_TEMPLATE_ROLES),
   descriptorEngine: z.enum(FACE_DESCRIPTOR_ENGINES),
-  modelVersion: z.literal(FACE_MODEL_VERSION),
+  modelVersion: z.enum(FACE_MODEL_VERSIONS),
   sourceDeviceClass: z.enum(FACE_DEVICE_CLASSES),
   embedding: z.array(z.number()).length(1024),
   challengeToken: z.string().min(20).max(4096),
@@ -48,6 +49,9 @@ export async function POST(request: Request) {
     if (expectedEngineForRole(scan.templateRole) !== scan.descriptorEngine) {
       return jsonError("Engine descriptor tidak sesuai dengan peran template.");
     }
+    if (!isSupportedFaceProfile(scan.templateRole, scan.modelVersion)) {
+      return jsonError("Versi model tidak sesuai dengan peran template.");
+    }
     if (scan.templateRole === "desktop-primary" && scan.sourceDeviceClass !== "desktop") {
       return jsonError("Template desktop hanya dapat diverifikasi melalui desktop.");
     }
@@ -55,7 +59,7 @@ export async function POST(request: Request) {
       return jsonError("Template HP hanya dapat diverifikasi melalui perangkat mobile.");
     }
 
-    const currentDescriptor = normalizeFaceDescriptor(scan.embedding);
+    const currentDescriptor = normalizeFaceDescriptor(scan.embedding, scan.modelVersion);
     if (!currentDescriptor) return jsonError("Descriptor wajah tidak valid. Ulangi pemindaian.");
 
     const liveness = validateFaceEvidence({
@@ -75,12 +79,12 @@ export async function POST(request: Request) {
       return jsonError("Template wajah untuk profil perangkat ini belum tersedia.", 409);
     }
     if (record.modelVersion !== scan.modelVersion) {
-      return jsonError("Versi model template wajah berbeda. Minta administrator mereset data wajah lalu daftar ulang.", 409);
+      return jsonError("Halaman verifikasi wajah sudah diperbarui. Muat ulang halaman lalu ulangi pemindaian.", 409);
     }
 
     const referenceDescriptor = decryptFaceDescriptor(record.templateEncrypted);
-    const similarity = faceSimilarity(referenceDescriptor, currentDescriptor);
-    if (similarity < FACE_MATCH_THRESHOLD) {
+    const similarity = faceSimilarity(referenceDescriptor, currentDescriptor, scan.modelVersion);
+    if (similarity < faceMatchThreshold(scan.modelVersion)) {
       return jsonError(`Wajah tidak cocok dengan data pendaftar (Skor: ${similarity}). Pastikan pencahayaan dan wajah sudah benar.`, 401);
     }
 

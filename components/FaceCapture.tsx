@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import type Human from "@vladmandic/human";
-import type { Config } from "@vladmandic/human";
+import type { Config, GraphModel } from "@vladmandic/human";
 import LoadingButton from "@/components/LoadingButton";
+import { arcFaceEmbedding, averageArcFaceEmbedding, loadArcFaceModel } from "@/lib/face-arcface";
 import {
   FACE_MODEL_VERSION,
   expectedEngineForRole,
@@ -12,6 +13,7 @@ import {
   type FaceChallengeResponse,
   type FaceChallengeStep,
   type FaceDeviceClass,
+  type FaceModelVersion,
   type FaceTemplateRole
 } from "@/lib/face-types";
 
@@ -61,7 +63,7 @@ const stepLabels: Record<FaceChallengeStep, string> = {
   center: "Kembali menghadap lurus ke kamera"
 };
 
-function buildModelConfig(templateRole: FaceTemplateRole, deviceClass: FaceDeviceClass): Partial<Config> {
+function buildModelConfig(templateRole: FaceTemplateRole, deviceClass: FaceDeviceClass, legacyDescriptor: boolean): Partial<Config> {
   const mobile = deviceClass === "mobile";
   const wasmProfile = templateRole !== "desktop-primary";
   return {
@@ -94,7 +96,8 @@ function buildModelConfig(templateRole: FaceTemplateRole, deviceClass: FaceDevic
       },
       mesh: { enabled: true },
       iris: { enabled: true },
-      description: { enabled: true, skipFrames: 0, skipTime: 0 },
+      // faceres hanya dimuat untuk template lama; template baru memakai ArcFace.
+      description: { enabled: legacyDescriptor, skipFrames: 0, skipTime: 0 },
       emotion: { enabled: false },
       antispoof: { enabled: true, skipFrames: 0, skipTime: 0 },
       liveness: { enabled: true, skipFrames: 0, skipTime: 0 }
@@ -106,21 +109,27 @@ function buildModelConfig(templateRole: FaceTemplateRole, deviceClass: FaceDevic
   };
 }
 
-let humanCache: { key: string; promise: Promise<Human> } | null = null;
+type FaceModels = { human: Human; arcface: GraphModel | null };
+
+let humanCache: { key: string; promise: Promise<FaceModels> } | null = null;
 let pendingDetection: Promise<unknown> = Promise.resolve();
 
 // Satu instance Human per profil dipakai ulang, sehingga pindai ulang tidak memuat model lagi.
-function loadHuman(templateRole: FaceTemplateRole, deviceClass: FaceDeviceClass) {
-  const key = `${templateRole}:${deviceClass}`;
+function loadHuman(templateRole: FaceTemplateRole, deviceClass: FaceDeviceClass, modelVersion: FaceModelVersion) {
+  const key = `${templateRole}:${deviceClass}:${modelVersion}`;
   if (humanCache?.key === key) return humanCache.promise;
 
+  const legacyDescriptor = modelVersion === FACE_MODEL_VERSION;
   const promise = (async () => {
     const humanModule = await import("@vladmandic/human");
-    const human = new humanModule.default(buildModelConfig(templateRole, deviceClass));
+    const human = new humanModule.default(buildModelConfig(templateRole, deviceClass, legacyDescriptor));
     await human.init();
-    await human.load();
+    const [arcface] = await Promise.all([
+      legacyDescriptor ? null : loadArcFaceModel(human),
+      human.load()
+    ]);
 
-    const requiredModels = ["blazeface", "facemesh", "iris", "faceres", "antispoof", "liveness"];
+    const requiredModels = ["blazeface", "facemesh", "iris", "antispoof", "liveness", ...(legacyDescriptor ? ["faceres"] : [])];
     const unavailableModels = requiredModels.filter((name) => {
       const model = human.models.models[name];
       try {
@@ -132,7 +141,7 @@ function loadHuman(templateRole: FaceTemplateRole, deviceClass: FaceDeviceClass)
     if (unavailableModels.length > 0) {
       throw new Error("Model verifikasi wajah belum termuat lengkap. Muat ulang halaman lalu coba kembali.");
     }
-    return human;
+    return { human, arcface };
   })();
   humanCache = { key, promise };
   promise.catch(() => {
@@ -141,8 +150,8 @@ function loadHuman(templateRole: FaceTemplateRole, deviceClass: FaceDeviceClass)
   return promise;
 }
 
-export function preloadFaceModels(templateRole: FaceTemplateRole, deviceClass: FaceDeviceClass) {
-  loadHuman(templateRole, deviceClass).catch(() => undefined);
+export function preloadFaceModels(templateRole: FaceTemplateRole, deviceClass: FaceDeviceClass, modelVersion: FaceModelVersion) {
+  loadHuman(templateRole, deviceClass, modelVersion).catch(() => undefined);
 }
 
 type Phase = "idle" | "loading" | "scanning" | "processing" | "complete" | "error";
@@ -150,6 +159,7 @@ type Phase = "idle" | "loading" | "scanning" | "processing" | "complete" | "erro
 export default function FaceCapture({
   mode,
   templateRole,
+  modelVersion,
   deviceClass,
   onComplete,
   onReset,
@@ -157,6 +167,7 @@ export default function FaceCapture({
 }: {
   mode: FaceChallengeMode;
   templateRole: FaceTemplateRole;
+  modelVersion: FaceModelVersion;
   deviceClass: FaceDeviceClass;
   onComplete: (payload: FaceCapturePayload) => void | Promise<void>;
   onReset?: () => void;
@@ -179,6 +190,7 @@ export default function FaceCapture({
   const [currentStep, setCurrentStep] = useState(0);
 
   const descriptorEngine = expectedEngineForRole(templateRole);
+  const legacyDescriptor = modelVersion === FACE_MODEL_VERSION;
   const mobile = deviceClass === "mobile";
   const holdDurationMs = mobile ? 850 : 650;
   const minimumDescriptorSamples = templateRole === "desktop-primary" ? 3 : 5;
@@ -208,8 +220,8 @@ export default function FaceCapture({
   }, []);
 
   useEffect(() => {
-    preloadFaceModels(templateRole, deviceClass);
-  }, [templateRole, deviceClass]);
+    preloadFaceModels(templateRole, deviceClass, modelVersion);
+  }, [templateRole, deviceClass, modelVersion]);
 
   async function start() {
     onReset?.();
@@ -249,6 +261,7 @@ export default function FaceCapture({
         mode,
         templateRole,
         descriptorEngine,
+        modelVersion,
         sourceDeviceClass: deviceClass
       });
       const requestChallenge = () => fetch(`/api/face/challenge?${query.toString()}`, {
@@ -261,9 +274,9 @@ export default function FaceCapture({
       });
 
       const challengeRequestedAt = Date.now();
-      const [stream, human, firstChallenge] = await Promise.all([
+      const [stream, { human, arcface }, firstChallenge] = await Promise.all([
         cameraRequest,
-        loadHuman(templateRole, deviceClass),
+        loadHuman(templateRole, deviceClass, modelVersion),
         requestChallenge()
       ]);
       const challenge = Date.now() - challengeRequestedAt > CHALLENGE_REFRESH_AFTER_MS
@@ -294,7 +307,7 @@ export default function FaceCapture({
         const step = challenge.steps[stepIndexRef.current];
         const input = squareCanvas ? centerSquareFrame(video, squareCanvas) : video;
         // Descriptor (faceres) hanya dibutuhkan saat menghadap lurus; langkah lain dilewati agar frame lebih cepat.
-        const detection = human.detect(input, { face: { description: { enabled: step === "center" } } });
+        const detection = human.detect(input, { face: { description: { enabled: legacyDescriptor && step === "center" } } });
         pendingDetection = detection;
         const result = await detection;
         if (runId !== runIdRef.current) return;
@@ -340,8 +353,14 @@ export default function FaceCapture({
               ? gestures.includes("facing right") || yaw < -0.25
               : gestures.includes("facing center") || Math.abs(yaw) < (mobile ? 0.18 : 0.16);
           if (condition) {
-            if (step === "center" && face.embedding?.length === 1024) {
-              centerDescriptorsRef.current.push([...face.embedding]);
+            const sample = step !== "center"
+              ? null
+              : arcface && squareCanvas
+                ? await arcFaceEmbedding(human, arcface, squareCanvas, face.meshRaw)
+                : face.embedding?.length === 1024 ? [...face.embedding] : null;
+            if (runId !== runIdRef.current) return;
+            if (sample) {
+              centerDescriptorsRef.current.push(sample);
               if (centerDescriptorsRef.current.length > MAX_CENTER_DESCRIPTOR_SAMPLES) {
                 centerDescriptorsRef.current.shift();
               }
@@ -374,7 +393,9 @@ export default function FaceCapture({
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       }
 
-      const embedding = medianDescriptor(centerDescriptorsRef.current, minimumDescriptorSamples);
+      const embedding = legacyDescriptor
+        ? medianDescriptor(centerDescriptorsRef.current, minimumDescriptorSamples)
+        : averageArcFaceEmbedding(centerDescriptorsRef.current, minimumDescriptorSamples);
       const score = scoresRef.current;
       if (!embedding || score.count < challenge.steps.length) {
         throw new Error("Descriptor wajah belum stabil. Tatap kamera tanpa bergerak sesaat, lalu ulangi pemindaian.");
@@ -386,7 +407,7 @@ export default function FaceCapture({
       await onComplete({
         templateRole,
         descriptorEngine,
-        modelVersion: FACE_MODEL_VERSION,
+        modelVersion,
         sourceDeviceClass: deviceClass,
         embedding,
         challengeToken: challenge.token,

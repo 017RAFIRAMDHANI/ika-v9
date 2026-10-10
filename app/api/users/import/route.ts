@@ -7,8 +7,11 @@ import {
   FACE_DESCRIPTOR_ENGINES,
   FACE_DEVICE_CLASSES,
   FACE_MODEL_VERSION,
+  FACE_MODEL_VERSIONS,
   FACE_TEMPLATE_ROLES,
-  expectedEngineForRole
+  expectedEngineForRole,
+  isSupportedFaceProfile,
+  type FaceModelVersion
 } from "@/lib/face-types";
 import { getSessionUser, isAdmin } from "@/lib/session";
 import { isSameOrigin, jsonError } from "@/lib/security";
@@ -79,7 +82,8 @@ function parseV4Templates(value: string, rowNumber: number): StoredFaceTemplateI
       || !FACE_DESCRIPTOR_ENGINES.includes(descriptorEngine)
       || !FACE_DEVICE_CLASSES.includes(sourceDeviceClass)
       || expectedEngineForRole(templateRole) !== descriptorEngine
-      || modelVersion !== FACE_MODEL_VERSION
+      || !FACE_MODEL_VERSIONS.includes(modelVersion as FaceModelVersion)
+      || !isSupportedFaceProfile(templateRole, modelVersion as FaceModelVersion)
       || !templateEncrypted
     ) {
       throw new Error(`Metadata template wajah V4 pada baris ${rowNumber} tidak valid.`);

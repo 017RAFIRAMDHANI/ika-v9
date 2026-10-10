@@ -4,26 +4,32 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import FaceCapture from "@/components/FaceCapture";
 import { detectFaceDeviceClass } from "@/lib/face-device";
-import type {
-  FaceCapturePayload,
-  FaceChallengeMode,
-  FaceDeviceClass,
-  FaceTemplateRole
+import {
+  FACE_ARCFACE_MODEL_VERSION,
+  FACE_MODEL_VERSION,
+  type FaceCapturePayload,
+  type FaceChallengeMode,
+  type FaceDeviceClass,
+  type FaceModelVersion,
+  type FaceTemplateRole
 } from "@/lib/face-types";
 
 type GateProfile = {
   mode: Exclude<FaceChallengeMode, "register">;
   templateRole: FaceTemplateRole;
+  modelVersion: FaceModelVersion;
 };
 
 export default function FaceGate({
   desktopPrimaryEnrolled,
   mobilePrimaryEnrolled,
-  canonicalEnrolled
+  canonicalEnrolled,
+  canonicalModelVersion
 }: {
   desktopPrimaryEnrolled: boolean;
   mobilePrimaryEnrolled: boolean;
   canonicalEnrolled: boolean;
+  canonicalModelVersion: FaceModelVersion | null;
 }) {
   const router = useRouter();
   const [deviceClass, setDeviceClass] = useState<FaceDeviceClass | null>(null);
@@ -34,23 +40,29 @@ export default function FaceGate({
     const timer = window.setTimeout(() => {
       const detected = detectFaceDeviceClass();
       setDeviceClass(detected);
+      const canonical: GateProfile = {
+        mode: "verify",
+        templateRole: "canonical-cross-device",
+        modelVersion: canonicalModelVersion ?? FACE_ARCFACE_MODEL_VERSION
+      };
+      const enroll: GateProfile = { mode: "enroll", templateRole: "canonical-cross-device", modelVersion: FACE_ARCFACE_MODEL_VERSION };
       if (detected === "mobile") {
-        if (mobilePrimaryEnrolled) setProfile({ mode: "verify", templateRole: "mobile-primary" });
-        else if (canonicalEnrolled) setProfile({ mode: "verify", templateRole: "canonical-cross-device" });
+        if (mobilePrimaryEnrolled) setProfile({ mode: "verify", templateRole: "mobile-primary", modelVersion: FACE_MODEL_VERSION });
+        else if (canonicalEnrolled) setProfile(canonical);
         else if (desktopPrimaryEnrolled) {
           setBlocked("Akun ini hanya memiliki template desktop lama dan belum mempunyai template lintas perangkat.");
-        } else setProfile({ mode: "enroll", templateRole: "canonical-cross-device" });
+        } else setProfile(enroll);
         return;
       }
 
-      if (desktopPrimaryEnrolled) setProfile({ mode: "verify", templateRole: "desktop-primary" });
-      else if (canonicalEnrolled) setProfile({ mode: "verify", templateRole: "canonical-cross-device" });
+      if (desktopPrimaryEnrolled) setProfile({ mode: "verify", templateRole: "desktop-primary", modelVersion: FACE_MODEL_VERSION });
+      else if (canonicalEnrolled) setProfile(canonical);
       else if (mobilePrimaryEnrolled) {
         setBlocked("Akun ini hanya memiliki template HP lama dan belum mempunyai template lintas perangkat.");
-      } else setProfile({ mode: "enroll", templateRole: "canonical-cross-device" });
+      } else setProfile(enroll);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [canonicalEnrolled, desktopPrimaryEnrolled, mobilePrimaryEnrolled]);
+  }, [canonicalEnrolled, canonicalModelVersion, desktopPrimaryEnrolled, mobilePrimaryEnrolled]);
 
   async function complete(payload: FaceCapturePayload) {
     if (!profile) return;
@@ -92,9 +104,10 @@ export default function FaceGate({
       {blocked && <div className="alert alert-warning" role="alert">{blocked}</div>}
       {deviceClass && profile && (
         <FaceCapture
-          key={`${profile.mode}-${profile.templateRole}`}
+          key={`${profile.mode}-${profile.templateRole}-${profile.modelVersion}`}
           mode={profile.mode}
           templateRole={profile.templateRole}
+          modelVersion={profile.modelVersion}
           deviceClass={deviceClass}
           onComplete={complete}
           compact

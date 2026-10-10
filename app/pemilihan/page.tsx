@@ -3,7 +3,8 @@ import { redirect } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import FaceGate from "@/components/FaceGate";
 import VotingForm from "@/components/VotingForm";
-import { getCandidates } from "@/lib/db";
+import { getCandidates, getFaceVerificationRecord } from "@/lib/db";
+import { FACE_MODEL_VERSIONS } from "@/lib/face-types";
 import { getSessionUser } from "@/lib/session";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +55,10 @@ export default async function VotingPage() {
   }
 
   if (!user.faceVerified) {
+    const canonicalRecord = user.canonicalEnrolled
+      ? await getFaceVerificationRecord(user.id, "canonical-cross-device", "human-wasm-v1")
+      : null;
+    const canonicalModelVersion = FACE_MODEL_VERSIONS.find((version) => version === canonicalRecord?.modelVersion) ?? null;
     return (
       <AppShell user={user}>
         <div className="voting-page-head">
@@ -66,6 +71,7 @@ export default async function VotingPage() {
           desktopPrimaryEnrolled={user.desktopPrimaryEnrolled}
           mobilePrimaryEnrolled={user.mobilePrimaryEnrolled}
           canonicalEnrolled={user.canonicalEnrolled}
+          canonicalModelVersion={canonicalModelVersion}
         />
       </AppShell>
     );

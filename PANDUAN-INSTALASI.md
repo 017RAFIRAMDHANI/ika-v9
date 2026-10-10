@@ -163,7 +163,8 @@ Ulangi pemeriksaan build setelah pembaruan.
    - `SESSION_SECRET`
    - `FACE_DATA_SECRET`
    - `REGISTRATION_PRIMARY_CODE`
-   - `FACE_MATCH_THRESHOLD` (opsional; default `0.68`)
+   - `FACE_MATCH_THRESHOLD` (opsional; default `0.68`, hanya untuk template lama)
+   - `FACE_ARCFACE_MATCH_THRESHOLD` (opsional; default `0.42`, minimum `0.40`)
    - `FACE_CROSS_DEVICE_ENABLED` (`true` untuk V4)
 
    Pilih Production, Preview, dan Development sesuai kebutuhan. Dokumentasi

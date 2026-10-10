@@ -2,11 +2,11 @@
 
 V4 memakai database Neon baru. Pendaftaran baru, baik melalui PC maupun HP,
 cukup satu pemindaian wajah yang menghasilkan template `canonical-cross-device`
-(WASM, frame persegi 480×480). Template ini dipakai untuk login PC→PC, HP→HP,
-PC→HP, dan HP→PC. Setiap login hanya melakukan satu verifikasi dan
-membandingkan satu template dengan ambang ketat bawaan `0.68`. Akun lama yang
-masih memiliki `desktop-primary`/`mobile-primary` tetap berjalan seperti
-sebelumnya.
+yang memakai model ArcFace (InsightFace EfficientNet-B0) pada wajah yang diluruskan
+5 titik. Template ini dipakai untuk login PC→PC, HP→HP, PC→HP, dan HP→PC.
+Setiap login hanya melakukan satu verifikasi dan membandingkan satu template
+dengan ambang cosine `0.42` hasil kalibrasi (lihat `VERIFIKASI-WAJAH.md`). Akun
+lama yang masih memakai model `faceres` tetap diverifikasi dengan jalur lamanya.
 
 Versi ini adalah migrasi full-stack dari proyek Laravel/MySQL ke Next.js App
 Router dan Neon PostgreSQL. Backend, database, autentikasi, kandidat, dan alur pemilihan dipertahankan dari proyek sumber. Antarmuka telah didesain ulang penuh berdasarkan paket `new_design` dan dioptimalkan untuk desktop serta mobile.

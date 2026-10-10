@@ -4,8 +4,9 @@ import { encryptFaceDescriptor, normalizeFaceDescriptor, validateFaceEvidence } 
 import {
   FACE_CHALLENGE_STEPS,
   FACE_DESCRIPTOR_ENGINES,
+  FACE_ARCFACE_MODEL_VERSION,
   FACE_DEVICE_CLASSES,
-  FACE_MODEL_VERSION,
+  FACE_MODEL_VERSIONS,
   FACE_TEMPLATE_ROLES,
   expectedEngineForRole
 } from "@/lib/face-types";
@@ -15,7 +16,7 @@ import { isSameOrigin, jsonError } from "@/lib/security";
 const schema = z.object({
   templateRole: z.enum(FACE_TEMPLATE_ROLES),
   descriptorEngine: z.enum(FACE_DESCRIPTOR_ENGINES),
-  modelVersion: z.literal(FACE_MODEL_VERSION),
+  modelVersion: z.enum(FACE_MODEL_VERSIONS),
   sourceDeviceClass: z.enum(FACE_DEVICE_CLASSES),
   embedding: z.array(z.number()).length(1024),
   challengeToken: z.string().min(20).max(4096),
@@ -41,23 +42,16 @@ export async function POST(request: Request) {
     if (expectedEngineForRole(scan.templateRole) !== scan.descriptorEngine) {
       return jsonError("Engine descriptor tidak sesuai dengan peran template.");
     }
-    if (scan.templateRole === "desktop-primary" && scan.sourceDeviceClass !== "desktop") {
-      return jsonError("Template desktop hanya dapat didaftarkan melalui desktop.");
-    }
-    if (scan.templateRole === "mobile-primary" && scan.sourceDeviceClass !== "mobile") {
-      return jsonError("Template HP hanya dapat didaftarkan melalui perangkat mobile.");
+    // Template baru hanya lintas perangkat (ArcFace); template primary lama tidak dibuat lagi.
+    if (scan.modelVersion !== FACE_ARCFACE_MODEL_VERSION || scan.templateRole !== "canonical-cross-device") {
+      return jsonError("Halaman verifikasi wajah sudah diperbarui. Muat ulang halaman lalu ulangi pemindaian.", 409);
     }
 
-    const descriptor = normalizeFaceDescriptor(scan.embedding);
+    const descriptor = normalizeFaceDescriptor(scan.embedding, scan.modelVersion);
     if (!descriptor) return jsonError("Descriptor wajah tidak valid. Ulangi pemindaian.");
 
     const availabilityBefore = await getFaceTemplateAvailability(session.id);
-    const targetExists = scan.templateRole === "desktop-primary"
-      ? availabilityBefore.desktopPrimaryEnrolled
-      : scan.templateRole === "mobile-primary"
-        ? availabilityBefore.mobilePrimaryEnrolled
-        : availabilityBefore.canonicalEnrolled;
-    if (targetExists) return jsonError("Template wajah untuk profil ini sudah terdaftar.", 409);
+    if (availabilityBefore.canonicalEnrolled) return jsonError("Template wajah untuk profil ini sudah terdaftar.", 409);
     if (
       (
         availabilityBefore.desktopPrimaryEnrolled

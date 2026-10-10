@@ -5,7 +5,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import FaceCapture, { preloadFaceModels } from "@/components/FaceCapture";
 import LoadingButton from "@/components/LoadingButton";
 import { detectFaceDeviceClass } from "@/lib/face-device";
-import type { FaceCapturePayload, FaceDeviceClass } from "@/lib/face-types";
+import { FACE_ARCFACE_MODEL_VERSION, type FaceCapturePayload, type FaceDeviceClass } from "@/lib/face-types";
 
 type RegistrationStep = 1 | 2 | 3;
 
@@ -58,7 +58,7 @@ export default function RegistrationForm() {
 
   // Model wajah diunduh di latar belakang selama pengisian biodata agar pemindaian langsung siap.
   useEffect(() => {
-    if (deviceClass && step >= 2) preloadFaceModels("canonical-cross-device", deviceClass);
+    if (deviceClass && step >= 2) preloadFaceModels("canonical-cross-device", deviceClass, FACE_ARCFACE_MODEL_VERSION);
   }, [deviceClass, step]);
 
   useEffect(() => {
@@ -297,6 +297,7 @@ export default function RegistrationForm() {
               <FaceCapture
                 mode="register"
                 templateRole="canonical-cross-device"
+                modelVersion={FACE_ARCFACE_MODEL_VERSION}
                 deviceClass={deviceClass}
                 onReset={() => setCanonicalFace(null)}
                 onComplete={(payload) => { setCanonicalFace(payload); setError(""); }}

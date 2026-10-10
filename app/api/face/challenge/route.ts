@@ -1,11 +1,14 @@
 import { z } from "zod";
 import { createFaceChallenge } from "@/lib/face";
-import { getFaceTemplateAvailability } from "@/lib/db";
+import { getFaceTemplateAvailability, getFaceVerificationRecord } from "@/lib/db";
 import {
+  FACE_ARCFACE_MODEL_VERSION,
   FACE_DESCRIPTOR_ENGINES,
   FACE_DEVICE_CLASSES,
+  FACE_MODEL_VERSIONS,
   FACE_TEMPLATE_ROLES,
-  expectedEngineForRole
+  expectedEngineForRole,
+  isSupportedFaceProfile
 } from "@/lib/face-types";
 import { getSessionUser } from "@/lib/session";
 import { isSameOrigin, jsonError } from "@/lib/security";
@@ -14,6 +17,7 @@ const modeSchema = z.enum(["register", "enroll", "verify"]);
 const profileSchema = z.object({
   templateRole: z.enum(FACE_TEMPLATE_ROLES),
   descriptorEngine: z.enum(FACE_DESCRIPTOR_ENGINES),
+  modelVersion: z.enum(FACE_MODEL_VERSIONS),
   sourceDeviceClass: z.enum(FACE_DEVICE_CLASSES)
 });
 
@@ -26,11 +30,19 @@ export async function GET(request: Request) {
     const profile = profileSchema.safeParse({
       templateRole: params.get("templateRole"),
       descriptorEngine: params.get("descriptorEngine"),
+      modelVersion: params.get("modelVersion"),
       sourceDeviceClass: params.get("sourceDeviceClass")
     });
     if (!profile.success) return jsonError("Profil descriptor wajah tidak valid.");
     if (expectedEngineForRole(profile.data.templateRole) !== profile.data.descriptorEngine) {
       return jsonError("Engine descriptor tidak sesuai dengan peran template.");
+    }
+    if (!isSupportedFaceProfile(profile.data.templateRole, profile.data.modelVersion)) {
+      return jsonError("Versi model tidak sesuai dengan peran template.");
+    }
+    // Template baru selalu memakai model terbaru; versi lama hanya untuk verifikasi.
+    if (mode.data !== "verify" && profile.data.modelVersion !== FACE_ARCFACE_MODEL_VERSION) {
+      return jsonError("Halaman verifikasi wajah sudah diperbarui. Muat ulang halaman lalu ulangi pemindaian.", 409);
     }
     if (profile.data.templateRole === "desktop-primary" && profile.data.sourceDeviceClass !== "desktop") {
       return jsonError("Template desktop hanya dapat dibuat atau diperiksa pada desktop.");
@@ -58,6 +70,12 @@ export async function GET(request: Request) {
       }
       if (mode.data === "verify" && !templateExists) {
         return jsonError("Template wajah untuk profil perangkat ini belum terdaftar.", 409);
+      }
+      if (mode.data === "verify") {
+        const record = await getFaceVerificationRecord(session.id, profile.data.templateRole, profile.data.descriptorEngine);
+        if (record?.modelVersion !== profile.data.modelVersion) {
+          return jsonError("Halaman verifikasi wajah sudah diperbarui. Muat ulang halaman lalu ulangi pemindaian.", 409);
+        }
       }
     }
 

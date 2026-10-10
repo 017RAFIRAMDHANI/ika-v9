@@ -5,8 +5,9 @@ import { encryptFaceDescriptor, normalizeFaceDescriptor, validateFaceEvidence } 
 import {
   FACE_CHALLENGE_STEPS,
   FACE_DESCRIPTOR_ENGINES,
+  FACE_ARCFACE_MODEL_VERSION,
   FACE_DEVICE_CLASSES,
-  FACE_MODEL_VERSION,
+  FACE_MODEL_VERSIONS,
   FACE_TEMPLATE_ROLES,
   expectedEngineForRole
 } from "@/lib/face-types";
@@ -26,7 +27,7 @@ const faceEvidenceSchema = z.object({
 const faceCaptureSchema = z.object({
   templateRole: z.enum(FACE_TEMPLATE_ROLES),
   descriptorEngine: z.enum(FACE_DESCRIPTOR_ENGINES),
-  modelVersion: z.literal(FACE_MODEL_VERSION),
+  modelVersion: z.enum(FACE_MODEL_VERSIONS),
   sourceDeviceClass: z.enum(FACE_DEVICE_CLASSES),
   embedding: z.array(z.number()).length(1024),
   challengeToken: z.string().min(20).max(4096),
@@ -74,13 +75,16 @@ export async function POST(request: Request) {
     if (scans.length !== 1) {
       return jsonError("Pendaftaran wajib berisi satu pemindaian wajah. Ulangi pemindaian wajah.");
     }
+    if (scans[0].modelVersion !== FACE_ARCFACE_MODEL_VERSION) {
+      return jsonError("Halaman verifikasi wajah sudah diperbarui. Muat ulang halaman lalu ulangi pemindaian.", 409);
+    }
 
     const templates = [];
     for (const scan of scans) {
       if (expectedEngineForRole(scan.templateRole) !== scan.descriptorEngine) {
         return jsonError("Engine descriptor tidak sesuai dengan peran template.");
       }
-      const descriptor = normalizeFaceDescriptor(scan.embedding);
+      const descriptor = normalizeFaceDescriptor(scan.embedding, scan.modelVersion);
       if (!descriptor) return jsonError("Descriptor wajah tidak valid. Ulangi pemindaian.");
       const liveness = validateFaceEvidence({
         token: scan.challengeToken,
